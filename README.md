@@ -1,3 +1,4 @@
 # Home-Page
-img/girls.jpg
+(img/girls.jpg)
+
 Just recorded some things
