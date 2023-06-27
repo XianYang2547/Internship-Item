@@ -1,4 +1,5 @@
 # Home-Page
-(img/girls.jpg)
+
+![image](img/girls.jpg)
 
 Just recorded some things
