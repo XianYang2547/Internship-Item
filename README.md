@@ -3,8 +3,8 @@
   <img src="https://img.shields.io/badge/Author-@XianYang-000000.svg?logo=GitHub" alt="GitHub"></a>
 
 # <p align="center">:blush::blush::blush:Home-Page:blush::blush::blush:</p>
-# <p align="center">For more information, please refer to other branches</p>
-# <p align="center">--->click main --->View all branches--->All branches
+# <p align="center">For more information, --->click main</p>
+# <p align="center"> --->View all branches--->All branches
 # <p align="center">then you can view all content💨💨💨</p>
                     
 
