@@ -3,10 +3,11 @@
   <img src="https://img.shields.io/badge/Author-@XianYang-000000.svg?logo=GitHub" alt="GitHub"></a>
 
 ### 下载数据和模型
-### 流程
-
-
+### 流程如下
+  ![image](img/6.png)
+### 结果
   ![image](img/20230802115911.jpg)
+### PYQT界面
 
                     
 
