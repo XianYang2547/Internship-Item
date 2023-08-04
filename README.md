@@ -8,7 +8,7 @@
 ### 结果
   ![image](img/20230802115911.jpg)
 ### PYQT界面
-
+  ![image](img/图片1.png)
                     
 
 
