@@ -10,7 +10,7 @@
 # <p align="center">then you can view all content💨💨💨</p>
 
 
-![image](img/girl.jpg)
+![image](image/1-210GQK246214.jpg)
 
 # <p align="center">🍄仓库包含了学习过程中的一些东西，比如像发表的文章、小项目、一些代码等🍄</p>
 
