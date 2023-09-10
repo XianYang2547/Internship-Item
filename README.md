@@ -4,8 +4,6 @@
 
 
 # <p align="center">:blush::blush::blush:Home-Page:blush::blush::blush:</p>
-
-# <p align="center">---> [View all branches](https://github.com/XianYang2547/Home-Page/branches/all)
 <p align="center">🍄工作中的一些记录，比如一些代码等🍄</p>
 
 <p align="center"> 
