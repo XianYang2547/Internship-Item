@@ -1,5 +1,5 @@
 <p align="left">
-  <a href [https://github.com/XianYang2547/Home-Page]">
+  <a href [https://github.com/XianYang2547]">
   <img src="https://img.shields.io/badge/Author-@XianYang-000000.svg?logo=GitHub" alt="GitHub"></a>
 
 
