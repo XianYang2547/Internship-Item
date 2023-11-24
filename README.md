@@ -60,7 +60,7 @@
 6. 结果：
 - [x] 自己
 <p align="center"> 
-<img src="image/265413658.PNG">
+<img src="image/265413658.png">
 </p>
 
 - [ ] 旁边工位的人
