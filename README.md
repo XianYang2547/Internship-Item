@@ -7,7 +7,7 @@
 <p align="center">🍄工作中的一些记录，比如一些代码等🍄</p>
 
 <p align="center"> 
-<img src="image/test1.jpg">
+<img src="Road_Assets/output/test1.jpg">
 </p>
 
 
