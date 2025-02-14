@@ -1,0 +1,9 @@
+general:
+    camera_model:               'ZED2i'
+    grab_resolution:            'HD1080'     # 'HD2K', 'HD1080', 'HD720', 'VGA', 'AUTO'
+    grab_frame_rate:            30          # Frequency of frame grabbing for internal SDK operations
+
+
+compression:
+    jpg_quality: 60 #   范围：0到100，数值越高表示质量越好，但文件大小也越大。
+    png_quality: 5 # 范围：0到9，0表示无压缩，9表示最高压缩率。
