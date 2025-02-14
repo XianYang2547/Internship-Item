@@ -12,7 +12,7 @@
 │ ├── test.jpg
 │ ├── test.avi         # 大文件未上传
 │ └── test.svo         # 大文件未上传
-├── C_code          # c++ TODO
+├── C_code             # c++ TODO
 │ ├── bytetrack
 │ ├── CMakeLists.txt
 │ ├── main.cpp
@@ -21,13 +21,15 @@
 ├── Infer_Python       # Py推理
 │ ├── demo.py          # 示例脚本
 │ ├── *.py             # ...
-│ ├── script           # 数据保存脚本
-│ └── xy               # 功能包
+│ ├── script           # 数据保存脚本,java服务控制
+│ └── xy               # 基类、功能、后处理等
 ├── models             # 模型文件
 │ ├── get_trt.py       # 转换脚本1
 │ ├── get_trt.cpp      # 转换脚本2
 │ └── get_engine       # cpp--->二进制文件
 ├── output             # 输出文件夹
+├── test               # 用于测试点云pcd及相机损坏图片
+├── tools              # 相机驱动，含x86和aarch，雷达驱动，以及上电开机自起脚本
 ├── README.md
 └── requirements.txt
 ```
@@ -60,6 +62,8 @@ all arg in demo.py ---> make_parser()
  - for image/avi/svo/directory
 ```bash
 python Infer_Python/demo.py --path assets/test.jpg
+```
+```bash
 python Infer_Python/demo.py --path assets/test.avi
 python Infer_Python/demo.py --path assets/test.svo
 python Infer_Python/demo.py --path [your directory]
@@ -71,7 +75,7 @@ python Infer_Python/demo.py --model [your model] --path [your file/dir path] --i
 
  - for camera ---> before this, you must run camera instance
 ```bash
-cd camera_gnss/camera+x86_64
+cd tools/camera_x86_64
 cat README.md
 ```
 then
