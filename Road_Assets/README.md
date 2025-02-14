@@ -10,8 +10,8 @@
 ├── assets             # 测试数据
 │ ├── rtsp             # 传送门下载的rtsp file
 │ ├── test.jpg
-│ ├── test.avi
-│ └── test.svo
+│ ├── test.avi         # 大文件未上传
+│ └── test.svo         # 大文件未上传
 ├── C_code          # c++ TODO
 │ ├── bytetrack
 │ ├── CMakeLists.txt
@@ -28,7 +28,6 @@
 │ ├── get_trt.cpp      # 转换脚本2
 │ └── get_engine       # cpp--->二进制文件
 ├── output             # 输出文件夹
-│ └── detect_image
 ├── README.md
 └── requirements.txt
 ```
@@ -44,7 +43,7 @@ cd Road_Assets
 pip install -r requirements.txt
 cat requirements.txt
 ```
-除demo.py外，其余需要ros2环境
+除demo.py外，部分需要ros2环境及zed sdk
 ### 2. 模型转换(if you run it with onnx model, skip this)
 - 2.1 use py script
 ```bash
@@ -72,8 +71,7 @@ python Infer_Python/demo.py --model [your model] --path [your file/dir path] --i
 
  - for camera ---> before this, you must run camera instance
 ```bash
-git clone http://172.16.10.64/xianyang/camera_gnss.git
-cd camera_gnss
+cd camera_gnss/camera+x86_64
 cat README.md
 ```
 then
