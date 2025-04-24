@@ -6,7 +6,7 @@
 # ------❤❤❤------ #
 
 
-from .models import My_detection, Build_TRT_model, Build_Ort_model, My_LoggerConfig, str2bool
+from .models import My_detection, Build_TRT_model, Build_Ort_model, My_LoggerConfig, Result, str2bool
 from .tracker.byte_tracker import BYTETracker
 
 logger = My_LoggerConfig().get_logger()
@@ -16,5 +16,6 @@ __all__ = (
     "Build_Ort_model",
     "BYTETracker",
     "logger",
+    "Result",
     "str2bool"
 )

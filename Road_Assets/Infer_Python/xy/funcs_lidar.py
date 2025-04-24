@@ -9,16 +9,12 @@
 import cupy as cp
 import cv2
 import datetime
-import shutil
 import math
 import numpy as np
-import open3d as o3d
 import os
-import platform
 import re
 import sensor_msgs_py.point_cloud2 as pc2
-import subprocess
-import subprocess as sp
+import shutil
 import sys
 import time
 import warnings
@@ -30,181 +26,40 @@ from sklearn.cluster import KMeans
 warnings.filterwarnings("ignore", category=np.RankWarning)
 
 
-def generate_txt_path(base_dir='./output', subfolder_name=None, base_name='result', extension=None, creat_folder=False, socket=False):
-    # 检查提供的输出目录是不是挂载点
-    if os.path.ismount(base_dir):
-        base_dir = f"{base_dir}/output"
-    else:
-        base_dir = 'output'
-    base_dir = os.path.join(base_dir, subfolder_name) if subfolder_name else os.path.join(base_dir)
-    os.makedirs(base_dir, exist_ok=True)
-    timestamp = datetime.datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
-    new_file_path = os.path.join(base_dir, f"{base_name}_{timestamp}{extension}")
-    if creat_folder:
-        Broken_Image_path = f"{base_dir}/Broken_Image_socket" if socket else f"{base_dir}/Broken_Image"
-        os.makedirs(Broken_Image_path, exist_ok=True)
-        return Broken_Image_path
-    else:
-        return new_file_path if os.path.isabs(new_file_path) else os.path.abspath(new_file_path)
-
-
-# 跟踪iou区分
-def iou(box: np.ndarray, boxes: np.ndarray):
-    xy_max = np.minimum(boxes[:, 2:], box[2:])
-    xy_min = np.maximum(boxes[:, :2], box[:2])
-    inter = np.clip(xy_max - xy_min, a_min=0, a_max=np.inf)
-    inter = inter[:, 0] * inter[:, 1]
-
-    area_boxes = (boxes[:, 2] - boxes[:, 0]) * (boxes[:, 3] - boxes[:, 1])
-    area_box = (box[2] - box[0]) * (box[3] - box[1])
-
-    return inter / (area_box + area_boxes - inter)
-
-
-# 拟合
-def my_fit(j, image, cutoff=50, color=(0, 255, 0)):
-    # 排序再拟合
-    """j.shape (577, 2)"""
-    sorted_indices = np.argsort(j[:, 1])[::-1]
-    points_np = j[sorted_indices]
-    # 拟合
-    fit_xdata = polynomial_fit(list(range(1, len(j) + 1)), points_np.T[0], degree=4)
-    fit_ydata = polynomial_fit(list(range(1, len(j) + 1)), points_np.T[1], degree=4)
-
-    fit_point = np.array([fit_xdata, fit_ydata])  # 组合
-    positive_mask = (fit_point >= 0).all(axis=0)
-    fit_point = fit_point[:, positive_mask]  # 拟合出来的点有负值，去掉这组点
-
-    if fit_point.shape[1] > 130:
-        fit_point = fit_point[:, cutoff:-cutoff]  # 去掉前后的一些点
-    # 画线
-    # points = np.array(fit_point).T.astype(int).reshape((-1, 1, 2))   # 将 fit_point 转换为适合 cv2.polylines 的格式
-    # cv2.polylines(image, [points], isClosed=False, color=color, thickness=2)
-
-    # 使用步长选取点
-    indices = np.linspace(0, fit_point.shape[1] - 1, num=15, dtype=int)  # 等距取点的索引
-    return fit_point[:, indices], fit_point
-
-
-def my_fit0(j, n_points=None):
-    """
-    对 (x, z) 进行拟合，并通过拟合得到新的 (x, y, z) 点。
-
-    参数:
-    j: 输入的点云数据 (形状为 n x 3)，每行是 [x, y, z]。
-    image: 用于绘制拟合曲线的图像。
-    cutoff: 剪裁的点数（用于去掉前后的一些点）。
-    color: 拟合线的颜色。
-    n_points: 选取拟合后点的数量。
-
-    返回:
-    new_x, new_y, new_z: 新的拟合点坐标。
-    """
-    # 排序 j，按 z 值降序排列
-    sorted_indices = np.argsort(j[:, 2])[::-1]  # 对 z 进行排序
-    points_np = j[sorted_indices]  # 排序后的点
-    # 提取 x 和 z，用于拟合
-    x_data = points_np[:, 0]
-    z_data = points_np[:, 2]
-    # 对 x 和 z 进行拟合
-    fit_xdata = polynomial_fit(list(range(1, len(j) + 1)), x_data, degree=4)
-    fit_zdata = polynomial_fit(list(range(1, len(j) + 1)), z_data, degree=4)
-    # 组合拟合后的 x 和 z 点
-    fit_point = np.array([fit_xdata, fit_zdata])  # (x, z) 的拟合点
-    # 使用步长选取 n 个点
-    if n_points is not None:
-        indices = np.linspace(0, fit_point.shape[1] - 1, num=n_points, dtype=int)
-    else:
-        indices = np.linspace(0, fit_point.shape[1] - 1, num=fit_point.shape[1], dtype=int)
-
-    # 选取拟合后的点
-    selected_fit_points = fit_point[:, indices]
-
-    # 获取对应的 y 值
-    # 我们使用选定的 x 和 z 来获取原始点中最接近的 y 值
-    new_x = selected_fit_points[0]
-    new_z = selected_fit_points[1]
-
-    new_y = []
-    for i in range(len(new_x)):
-        # 在原始数据中找到与拟合点最接近的 y 值
-        distances = np.sqrt((points_np[:, 0] - new_x[i]) ** 2 + (points_np[:, 2] - new_z[i]) ** 2)
-        closest_index = np.argmin(distances)
-        new_y.append(points_np[closest_index, 1])
-
-    new_y = np.array(new_y)
-    new_points = np.column_stack((new_x, new_y, new_z))
-    return new_points
-
-
-def polynomial_fit(xarray, yarray, degree=3):
-    try:
-        parameters = np.polyfit(xarray, yarray, degree)
-        return fit_curve(parameters, xarray)
-    except TypeError as e:
-        print(f"Error during np.polyfit: {e}")
-        print("xarray:", xarray)
-        print("yarray:", yarray)
-
-
-def fit_curve(parameters, xarray):
-    return np.polyval(parameters, xarray)
-
-
-# 跟踪
-def mytrack(seg, tracker):
-    new_seg_output = np.zeros((seg[0][0].shape[0], 7))  # seg是个list2 seg[0]是个list seg[0][0]里面是框
-    # 使用seg[0][0]填充，然后再填充id
-    new_seg_output[:, :5] = seg[0][0][:, :5]
-    new_seg_output[:, 6] = seg[0][0][:, 5]
-    track_seg = seg[0][0].copy()
-    track_seg[:, 4] = 0.95
-    seg_track = tracker.update(track_seg[:, :5])
-    # 将id和框对应起来
-    for track in seg_track:
-        box_iou = iou(track.tlbr, track_seg[:, :4])
-        maxindex = np.argmax(box_iou)
-        new_seg_output[maxindex, :5] = seg[0][0][maxindex, :5]
-        new_seg_output[maxindex, 5] = track.track_id
-        new_seg_output[maxindex, 6] = seg[0][0][maxindex, 5]
-    # new_seg_output  x1y1x2y2 conf id class
-    if 0 in new_seg_output[:, 5]:
-        for i in range(len(new_seg_output[:, 5])):
-            if new_seg_output[:, 5][i] == 0:
-                new_seg_output[:, 5][i] = tracker.nextid()
-    seg[0] = [new_seg_output]
-    return seg
-
-
 # 取点----------------------------
-def get_seg_result(seg, point_cloud, bgr_image, file, Model, ret_datetime, K, show_cloud_point):
+def get_seg_result(results, point_cloud, bgr_image, file, Model, ret_datetime, K, show_cloud_point):
     """Write segmentation information"""
     frame_all_info = ''
-    if len(seg[0]) != 0:
-        box, segpoint = seg[0][0], seg[1][0]
-        for key, value in Model.classes.items():  # for each seg class
-            # 车道线
-            if len(box[box[:, -1] == key]) != 0 and value in Model.lane.values():
-                frame_all_info = get_information(box, segpoint, key, value, bgr_image, file, point_cloud, Model.color_palette,
-                                ret_datetime, K, frame_all_info, show_cloud_point, lane=True, point_size=5)
-            # 护栏 隔音带  水泥墙  绿化带  路缘石
-            elif len(box[box[:, -1] == key]) != 0 and value in Model.seg.values():
-                frame_all_info = get_information(box, segpoint, key, value, bgr_image, file, point_cloud, Model.color_palette,
-                                ret_datetime, K, frame_all_info, show_cloud_point, lane=False, point_size=3)
-            # 路口黄网线 导流区 待行区 防抛网 隔离挡板
-            elif len(box[box[:, -1] == key]) != 0 and value in Model.other.values():
-                frame_all_info = write_Irregulate(box, segpoint, key, value, bgr_image, file, point_cloud,
-                                 Model.color_palette, K, frame_all_info, show_cloud_point)  # 不规则的
-            # 框
-            elif len(box[box[:, -1] == key]) != 0 and value in Model.obj.values():
-                frame_all_info = write_all_target(box, segpoint, key, value, bgr_image, file, point_cloud,
-                                 Model.color_palette, K, frame_all_info, show_cloud_point)
+    segpoint = results.mask2segments
+    box = np.hstack((results.box, np.reshape(results.id, (-1, 1)), np.reshape(results.labels, (-1, 1))))
+    for key, value in Model.classes.items():  # for each seg class
+        # 车道线
+        if len(box[box[:, -1] == key]) != 0 and value in Model.lane.values():
+            frame_all_info = get_information(box, segpoint, key, value, bgr_image, file, point_cloud,
+                                             Model.color_palette,
+                                             ret_datetime, K, frame_all_info, show_cloud_point, lane=True, point_size=5)
+        # 护栏 隔音带  水泥墙  绿化带  路缘石
+        elif len(box[box[:, -1] == key]) != 0 and value in Model.seg.values():
+            frame_all_info = get_information(box, segpoint, key, value, bgr_image, file, point_cloud,
+                                             Model.color_palette,
+                                             ret_datetime, K, frame_all_info, show_cloud_point, lane=False,
+                                             point_size=3)
+        # 路口黄网线 导流区 待行区 防抛网 隔离挡板
+        elif len(box[box[:, -1] == key]) != 0 and value in Model.other.values():
+            frame_all_info = write_Irregulate(box, segpoint, key, value, bgr_image, file, point_cloud,
+                                              Model.color_palette, K, frame_all_info, show_cloud_point)  # 不规则的
+        # 框
+        if len(box[box[:, -1] == key]) != 0 and value in Model.obj.values():
+            frame_all_info = write_all_target(box, segpoint, key, value, bgr_image, file, point_cloud,
+                                              Model.color_palette, K, frame_all_info, show_cloud_point)
     return frame_all_info
 
 
-def get_information(box, segpoint, key, value, bgr_image, file, point_cloud, color_palette, ret_datetime, K, frame_all_info, show_cloud_point, lane, point_size):
+def get_information(box, segpoint, key, value, bgr_image, file, point_cloud, color_palette, ret_datetime, K,
+                    frame_all_info, show_cloud_point, lane, point_size):
     """获取线块状区域"""
-    points = get_up_down_point(box, segpoint, key, bgr_image, point_cloud, color_palette, point_size, value, ret_datetime, K, show_cloud_point, lane)
+    points = get_up_down_point(box, segpoint, key, bgr_image, point_cloud, color_palette, point_size, value,
+                               ret_datetime, K, show_cloud_point, lane)
     if len(points) != 0 and lane:
         frame_all_info = write_lane(file, value, points, frame_all_info)
     if len(points) != 0 and not lane:
@@ -212,46 +67,20 @@ def get_information(box, segpoint, key, value, bgr_image, file, point_cloud, col
     return frame_all_info
 
 
-def get_up_down_point(box, segpoint, key, bgr_image, point_cloud, color_palette, point_size, value, ret_datetime, K, show_cloud_point, lane=False):
+def get_up_down_point(box, segpoint, key, bgr_image, point_cloud, color_palette, point_size, value, ret_datetime, K,
+                      show_cloud_point, lane=False):
     total = []
     image = np.zeros((1080, 1920), dtype=np.uint8)
     # 获取当前类别的所有数量的3d点
-    for b, j in zip([bb for bb, is_true in zip(box, box[:, -1] == key) if is_true],[tensor for tensor, is_true in zip(segpoint, box[:, -1] == key) if is_true]):
+    for b, j in zip([bb for bb, is_true in zip(box, box[:, -1] == key) if is_true],
+                    [tensor for tensor, is_true in zip(segpoint, box[:, -1] == key) if is_true]):
         j = j[~np.any(j < 0, axis=1)]
         # region
         if lane:
-            '''
-            # 按 y 值进行排序
-            sorted_points = j[np.argsort(j[:, 1])]
-            # 初始化字典来记录每个 y 值的最大 x 和最小 x
-            upper_contour = {}
-            lower_contour = {}
-            # 遍历排序后的点集
-            for point in sorted_points:
-                x, y = point
-                if y not in upper_contour:
-                    upper_contour[y] = x
-                    lower_contour[y] = x
-                else:
-                    upper_contour[y] = max(upper_contour[y], x)
-                    lower_contour[y] = min(lower_contour[y], x)
-            # 上边缘和下边缘的轮廓点
-            upper_contour_points = np.array([[x, y] for y, x in upper_contour.items()])
-            lower_contour_points = np.array([[x, y] for y, x in lower_contour.items()])'''
-            # 按 y 值进行排序
-            '''
-            sorted_points = j[j[:, 1].argsort()]
-            # 获取唯一的 y 值，以及对应的每个 y 的第一个和最后一个点
-            y_unique, indices_first = np.unique(sorted_points[:, 1], return_index=True)
-            indices_last = np.unique(sorted_points[:, 1], return_index=True, return_counts=True)[1] + \
-                           np.unique(sorted_points[:, 1], return_counts=True)[1] - 1
-            # 获取上边缘和下边缘的轮廓点
-            upper_contour_points = sorted_points[indices_last]
-            lower_contour_points = sorted_points[indices_first]'''
             points = j
             height, width, _ = bgr_image.shape
             mask0 = (points[:, 0] > 10) & (points[:, 0] < width - 10) & (points[:, 1] > 0) & (
-                        points[:, 1] < height - 10)
+                    points[:, 1] < height - 10)
             # 去掉 y 值最小的点
             min_y_value = np.min(points[:, 1])  # 获取最小的 y 值
             mask1 = points[:, 1] > min_y_value  # 只保留 y 值大于最小值的点
@@ -288,7 +117,7 @@ def get_up_down_point(box, segpoint, key, bgr_image, point_cloud, color_palette,
         # 掐头去尾 此处拟合防止midpoints的点几个几个的挤在一起
         upper_contour_points = upper_contour_points[3:-10] if len(upper_contour_points) > 20 else upper_contour_points
         lower_contour_points = lower_contour_points[3:-10] if len(lower_contour_points) > 20 else lower_contour_points
-        if len(upper_contour_points) == 0 or len(lower_contour_points) ==0:
+        if len(upper_contour_points) == 0 or len(lower_contour_points) == 0:
             return []
         _, fit_pointU = my_fit(upper_contour_points, bgr_image, cutoff=1)
         upper_contour_points = fit_pointU.T
@@ -335,9 +164,12 @@ def get_up_down_point(box, segpoint, key, bgr_image, point_cloud, color_palette,
             for point in midpoints[:-1]:
                 cv2.circle(bgr_image, tuple(point), radius=point_size, color=color_palette[key], thickness=-1)
         # endregion
-        
+
         # 取出分割区域的2d点
-        point_data = get_seg_area_point(j, image, point_cloud)
+        point_cloud_gpu = cp.asarray(point_cloud)
+        line_process_start = time.time()
+        point_data = get_seg_area_point(j, image, point_cloud, point_cloud_gpu)
+        # print(f"lane函数耗时----------------{(time.time() - line_process_start) * 1000:6.2f}ms,{j.shape}")
         if len(point_data) > 1:
             normalized_points = point_data[:, :2] / point_data[:, 2:3]
             u = K[0, 0] * normalized_points[:, 0] + K[0, 2]
@@ -368,18 +200,8 @@ def get_up_down_point(box, segpoint, key, bgr_image, point_cloud, color_palette,
             for matched_3d, curve_2d in filtered_matched_points:
                 matched_3d_points.append(matched_3d)
             matched_3d_points = np.array(matched_3d_points)
-            '''
-            new_points = my_fit0(matched_3d_points, n_points=20)
-            normalized_points = new_points[:, :2] / new_points[:, 2:3]
-            u = K[0, 0] * normalized_points[:, 0] + K[0, 2]
-            v = K[1, 1] * normalized_points[:, 1] + K[1, 2]
-            image_points = np.vstack((u, v)).T
-            for point in np.int32(image_points):
-                cv2.circle(bgr_image, tuple(point), radius=4, color=color_palette[int(b[-1])], thickness=-1)
-            new_points = new_points[new_points[:, 2].argsort()]
-            '''
             # 排序
-            if matched_3d_points.ndim==1: # --->没有匹配点matched_points
+            if matched_3d_points.ndim == 1:  # --->没有匹配点matched_points
                 continue
             # 防止护栏的点从缝隙透出去，使得点不准
             if value == 'guardrail':
@@ -408,7 +230,7 @@ def get_up_down_point(box, segpoint, key, bgr_image, point_cloud, color_palette,
 
                 # 转换成 numpy 数组
                 matched_3d_points = np.array(filtered_data)
-            
+
             new_points = matched_3d_points[matched_3d_points[:, 2].argsort()]
             # 加入ID
             pos = np.vstack((new_points, np.array([[b[-2], 0, np.inf]])))
@@ -522,18 +344,20 @@ def write_except_lane(file, value, _coordinates, frame_all_info):
 
 
 # 写路口黄网线 导流区 待行区 防抛网 隔离挡板
-def write_Irregulate(box, segpoint, key, value, bgr_image, file, point_cloud, color_palette, K, frame_all_info, show_cloud_point):
+def write_Irregulate(box, segpoint, key, value, bgr_image, file, point_cloud, color_palette, K, frame_all_info,
+                     show_cloud_point):
     file.write(f"{value}s:{len([tensor for tensor, is_true in zip(segpoint, box[:, -1] == key) if is_true])}\n")
     ###
     frame_all_info += f"{value}s:{len([tensor for tensor, is_true in zip(segpoint, box[:, -1] == key) if is_true])}\n"
     ###
     image = np.zeros((1080, 1920), dtype=np.uint8)
     for i, (b, j) in enumerate(zip([bb for bb, is_true in zip(box, box[:, -1] == key) if is_true],
-                    [tensor for tensor, is_true in zip(segpoint, box[:, -1] == key) if is_true])):
+                                   [tensor for tensor, is_true in zip(segpoint, box[:, -1] == key) if is_true])):
         j = j[~np.any(j < 0, axis=1)]  # 过滤掉负值
         # 获取目标区域的点云并投影显示
-        point_data = get_seg_area_point(j, image, point_cloud)
-        if len(point_data)>0:
+        point_cloud_gpu = cp.asarray(point_cloud)
+        point_data = get_seg_area_point(j, image, point_cloud, point_cloud_gpu)
+        if len(point_data) > 0:
             normalized_points = point_data[:, :2] / point_data[:, 2:3]
             u = K[0, 0] * normalized_points[:, 0] + K[0, 2]
             v = K[1, 1] * normalized_points[:, 1] + K[1, 2]
@@ -546,7 +370,7 @@ def write_Irregulate(box, segpoint, key, value, bgr_image, file, point_cloud, co
             distances, indices = tree.query(j)
             matched_3d_points = point_data[indices]
             # 筛选
-            step_size = len(matched_3d_points)//30
+            step_size = len(matched_3d_points) // 30
             if step_size == 0:
                 selected_points = matched_3d_points
             else:
@@ -563,18 +387,23 @@ def write_Irregulate(box, segpoint, key, value, bgr_image, file, point_cloud, co
 
 
 # 写目标,如箭头等
-def write_all_target(box, segpoint, key, value, bgr_image, file, point_cloud, color_palette, K, frame_all_info, show_cloud_point):
+def write_all_target(box, segpoint, key, value, bgr_image, file, point_cloud, color_palette, K, frame_all_info,
+                     show_cloud_point):
     file.write(f"{value}s:{len([tensor for tensor, is_true in zip(segpoint, box[:, -1] == key) if is_true])}\n")
     ###
     frame_all_info += f"{value}s:{len([tensor for tensor, is_true in zip(segpoint, box[:, -1] == key) if is_true])}\n"
     ###
     image = np.zeros((1080, 1920), dtype=np.uint8)
+    point_cloud_gpu = cp.asarray(point_cloud)
     for i, (b, j) in enumerate(zip([bb for bb, is_true in zip(box, box[:, -1] == key) if is_true],
-                    [tensor for tensor, is_true in zip(segpoint, box[:, -1] == key) if is_true])):
+                                   [tensor for tensor, is_true in zip(segpoint, box[:, -1] == key) if is_true])):
         j = j[~np.any(j < 0, axis=1)]  # 过滤掉负值
         # 获取目标区域的点云并投影显示
-        point_data = get_seg_area_point(j, image, point_cloud)
-        if len(point_data)>0:
+        line_process_start = time.time()
+        point_data = get_seg_area_point(j, image, point_cloud, point_cloud_gpu)
+        # print(f"obj函数耗时----------------{(time.time() - line_process_start) * 1000:6.2f}ms,{j.shape}")
+
+        if len(point_data) > 0:
             normalized_points = point_data[:, :2] / point_data[:, 2:3]
             u = K[0, 0] * normalized_points[:, 0] + K[0, 2]
             v = K[1, 1] * normalized_points[:, 1] + K[1, 2]
@@ -587,7 +416,8 @@ def write_all_target(box, segpoint, key, value, bgr_image, file, point_cloud, co
             kmeans = KMeans(n_clusters=1)
             kmeans.fit(point_data)
             cluster_centers = kmeans.cluster_centers_
-            if value == "pole" and abs(cluster_centers[0][0]) < 2: # 排除掉路中间误识别的杆子
+            # 排除掉路中间误识别的杆子
+            if (value == "pole" or value == "crash_bar") and abs(cluster_centers[0][0]) < 2:
                 continue
             formatted_data = ','.join(['{:.3f} {:.3f} {:.3f}'.format(x[0], -x[1], x[2]) for x in cluster_centers])
             file.write(f"{value.lower()}{i + 1}:{int(b[-2])},{formatted_data}\n")
@@ -603,35 +433,104 @@ def write_all_target(box, segpoint, key, value, bgr_image, file, point_cloud, co
 
 
 # 分割区域的点云值
-def get_seg_area_point(j, image, point_cloud):
-    # 取出分割区域的2d点
-    polygon_points = np.int32(j.reshape((-1, 1, 2)))
-    cv2.fillPoly(image, [polygon_points], (255, 255, 255))
-    flat_indices = np.flatnonzero(image == 255)
-    u, v = np.unravel_index(flat_indices, image.shape)
+def get_seg_area_point(j, image, point_cloud, point_cloud_gpu):
+    if j.shape[0] < 300:
+        polygon_points = np.int32(j.reshape((-1, 1, 2)))
+        cv2.fillPoly(image, [polygon_points], (255, 255, 255))
+        flat_indices = np.flatnonzero(image == 255)
+        u, v = np.unravel_index(flat_indices, image.shape)
 
-    # 取出分割区域的3d点、过滤
-    point_data = point_cloud[u, v]
-    point_data = point_data[~np.isnan(point_data).any(axis=1)]
-    point_data = point_data[~np.isinf(point_data).any(axis=1)]
-    point_data = point_data[~np.all(point_data == 0, axis=1)]
+        point_data = point_cloud[u, v]
+        mask = ~np.isnan(point_data).any(axis=1) & ~np.isinf(point_data).any(axis=1) & ~np.all(point_data == 0, axis=1)
+        point_data = point_data[mask]
 
-    if len(point_data) > 500:
+        distances = cdist(point_data, point_data)
+        # 确保distances矩阵不为空且有有效的内容
+        if distances.size > 0:
+            threshold_distance = 1 * np.mean(distances)
+            mean_distances = np.mean(distances, axis=1)
+            mask = mean_distances <= threshold_distance
+            point_data = point_data[mask]
+        else:
+            point_data = point_data
+    else:
+        j = cp.asarray(j, dtype=cp.int32)
+        polygon_points = j.reshape((-1, 1, 2))
+        y = cv2.fillPoly(image, [cp.asnumpy(polygon_points)], (255, 255, 255))
+        y = cp.asarray(y)
+        u, v = cp.where(y == 255)
+
+        point_data0 = point_cloud_gpu[u, v]
+        mask = ~cp.isnan(point_data0).any(axis=1) & ~cp.isinf(point_data0).any(axis=1) & ~cp.all(point_data0 == 0,
+                                                                                                 axis=1)
+        point_data = point_data0[mask]
+
         mean = np.mean(point_data, axis=0)
         std_dev = np.std(point_data, axis=0)
         mask = np.all(np.abs(point_data - mean) <= 2 * std_dev, axis=1)  # 3倍阈值
         point_data = point_data[mask]
-    else:
-        if len(point_data) > 1:
-            distances = cdist(point_data, point_data)
-            # 确保distances矩阵不为空且有有效的内容
-            if distances.size > 0:
-                threshold_distance = 1 * np.mean(distances)
-                mean_distances = np.mean(distances, axis=1)
-                mask = mean_distances <= threshold_distance
-                point_data = point_data[mask]
+        point_data = cp.asnumpy(point_data)
+
     image.fill(0)
     return point_data
+
+
+def generate_txt_path(base_dir='./output', subfolder_name=None, base_name='result', extension=None, creat_folder=False,
+                      socket=False):
+    # 检查提供的输出目录是不是挂载点
+    if os.path.ismount(base_dir):
+        base_dir = f"{base_dir}/output"
+    else:
+        base_dir = 'output'
+    base_dir = os.path.join(base_dir, subfolder_name) if subfolder_name else os.path.join(base_dir)
+    os.makedirs(base_dir, exist_ok=True)
+    timestamp = datetime.datetime.now().strftime("%Y_%m_%d-%H_%M_%S")
+    new_file_path = os.path.join(base_dir, f"{base_name}_{timestamp}{extension}")
+    if creat_folder:
+        Broken_Image_path = f"{base_dir}/Broken_Image_socket" if socket else f"{base_dir}/Broken_Image"
+        os.makedirs(Broken_Image_path, exist_ok=True)
+        return Broken_Image_path
+    else:
+        return new_file_path if os.path.isabs(new_file_path) else os.path.abspath(new_file_path)
+
+
+# 拟合
+def my_fit(j, image, cutoff=50, color=(0, 255, 0)):
+    # 排序再拟合
+    """j.shape (577, 2)"""
+    sorted_indices = np.argsort(j[:, 1])[::-1]
+    points_np = j[sorted_indices]
+    # 拟合
+    fit_xdata = polynomial_fit(list(range(1, len(j) + 1)), points_np.T[0], degree=4)
+    fit_ydata = polynomial_fit(list(range(1, len(j) + 1)), points_np.T[1], degree=4)
+
+    fit_point = np.array([fit_xdata, fit_ydata])  # 组合
+    positive_mask = (fit_point >= 0).all(axis=0)
+    fit_point = fit_point[:, positive_mask]  # 拟合出来的点有负值，去掉这组点
+
+    if fit_point.shape[1] > 130:
+        fit_point = fit_point[:, cutoff:-cutoff]  # 去掉前后的一些点
+    # 画线
+    # points = np.array(fit_point).T.astype(int).reshape((-1, 1, 2))   # 将 fit_point 转换为适合 cv2.polylines 的格式
+    # cv2.polylines(image, [points], isClosed=False, color=color, thickness=2)
+
+    # 使用步长选取点
+    indices = np.linspace(0, fit_point.shape[1] - 1, num=15, dtype=int)  # 等距取点的索引
+    return fit_point[:, indices], fit_point
+
+
+def polynomial_fit(xarray, yarray, degree=3):
+    try:
+        parameters = np.polyfit(xarray, yarray, degree)
+        return fit_curve(parameters, xarray)
+    except TypeError as e:
+        print(f"Error during np.polyfit: {e}")
+        print("xarray:", xarray)
+        print("yarray:", yarray)
+
+
+def fit_curve(parameters, xarray):
+    return np.polyval(parameters, xarray)
 
 
 # 杂项
@@ -662,39 +561,6 @@ def get_min_z_sublist(group):
     return min_z_sublist
 
 
-def get_ip_addresses():
-    # 判断操作系统
-    system = platform.system()
-    if system == "Windows":
-        # Windows 使用 ipconfig
-        result = subprocess.run(['ipconfig'], capture_output=True, text=True)
-        output = result.stdout
-        # 使用正则表达式提取所有 IPv4 地址
-        ip_pattern = r'IPv4 地址[. ]*: (\d+\.\d+\.\d+\.\d+)'
-    else:
-        # Linux 或 Mac 使用 ifconfig
-        result = subprocess.run(['ifconfig'], capture_output=True, text=True)
-        output = result.stdout
-        # 使用正则表达式提取所有 IP 地址
-        ip_pattern = r'inet (\d+\.\d+\.\d+\.\d+)'
-
-    # 查找匹配的 IP 地址
-    matches = re.findall(ip_pattern, output)
-
-    # 排除回环地址（127.0.0.1）和 172.x.0.1 地址
-    excluded_ips = ['127.0.0.1']
-
-    # 使用正则表达式来匹配 172.x.0.1 地址
-    docker_ip_pattern = r'^172\.\d+\.0\.1$'  # 匹配 172.x.0.1 的地址
-
-    # 过滤掉回环地址和 172.x.0.1 地址
-    filtered_ips = [
-        ip for ip in matches
-        if ip not in excluded_ips and not re.match(docker_ip_pattern, ip)
-    ]
-    return filtered_ips
-
-
 def get_timestamp(stamp):
     """将 ROS 时间戳转换为字符串"""
     timestamp_seconds = stamp.sec
@@ -711,7 +577,7 @@ def display_image(cv_image, architecture):
         cv2.imshow("res", cv_image)
         cv2.resizeWindow('res', 1000, 800)
         key = cv2.waitKey(1) & 0xFF
-        if key == ord('q'): 
+        if key == ord('q'):
             cv2.destroyAllWindows()
             sys.exit()
     else:
@@ -736,7 +602,8 @@ def display_image_for_socket(cv_image, architecture):
 
 def move_files_and_folders(Broken_Image_save_path):
     source_dir = os.path.dirname(Broken_Image_save_path)
-    existing_dirs = [d for d in os.listdir(source_dir) if os.path.isdir(os.path.join(source_dir, d)) and re.match(r'runs\d+', d)]
+    existing_dirs = [d for d in os.listdir(source_dir) if
+                     os.path.isdir(os.path.join(source_dir, d)) and re.match(r'runs\d+', d)]
     # 获取已有目录的编号
     existing_numbers = sorted(int(re.findall(r'\d+', d)[0]) for d in existing_dirs)
     # 找到第一个缺失的编号
@@ -763,7 +630,7 @@ def move_files_and_folders(Broken_Image_save_path):
             print(f"Moved: {item_path} -> {new_dir_path}")
         except Exception as e:
             print(f"Error moving {item_path}: {e}")
-    
+
 
 # 检查接收的图像拼接问题
 def apply_mean_smoothing(image, kernel_size=5):
@@ -826,7 +693,7 @@ def check_image_plus(gray_image, seam_x, margin):
     return Bhattacharyya_similarity, Correlation_similarity
 
 
-def check_image_dynamic_early_stop(image,B,C):
+def check_image_dynamic_early_stop(image, B, C):
     gray_image = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
     gray_image = apply_mean_smoothing(gray_image, kernel_size=5)
     images_to_check = [1035, 1102, 1166, 1233, 1299, 375]
@@ -840,38 +707,9 @@ def check_image_dynamic_early_stop(image,B,C):
 
 
 # ImageSubscriber的公共部分
-
-def process_lidar_point_cloud_np(lidar_msg, ret_datetime, K, R, T, save_pcd):
+def process_lidar_point_cloud(lidar_msg, lidar_datetime, K, R, T, save_pcd, cv_image, image_datetime):
     # 读取点云数据
-    lidar_data = pc2.read_points(lidar_msg, field_names=("x", "y", "z", "intensity"), skip_nans=True)
-    lidar_points = np.vstack([lidar_data['x'], lidar_data['y'], lidar_data['z']]).T.astype(np.float32)
-    intensities = lidar_data['intensity']
-    # 相机内参与目标图像大小
-    image_height, image_width = 1080, 1920
-    fx, fy, cx, cy = K[0, 0], K[1, 1], K[0, 2], K[1, 2]
-    # 图像初始化
-    point_cloud_image = np.zeros((image_height, image_width, 3), dtype=np.float32)
-    # lidar--->camera
-    lidar_points_camera = np.dot(lidar_points, R.T) + T
-    # 过滤 Z <= 0 的点
-    mask = (lidar_points_camera[:, 2] > 0)
-    lidar_points_camera = lidar_points_camera[mask]
-    intensities = intensities[mask]
-    # camera---> u,v
-    u = (fx * lidar_points_camera[:, 0] / lidar_points_camera[:, 2] + cx).astype(np.int32)
-    v = (fy * lidar_points_camera[:, 1] / lidar_points_camera[:, 2] + cy).astype(np.int32)
-    # 过滤图像外的点
-    valid_mask = (u >= 0) & (u < image_width) & (v >= 0) & (v < image_height)
-    u, v, valid_camera_points, valid_intensities = u[valid_mask], v[valid_mask], lidar_points_camera[valid_mask], intensities[valid_mask]
-    # 更新图像数据
-    point_cloud_image[v, u] = valid_camera_points  # 向量化赋值
-    if save_pcd:
-        save_pcd_file(valid_camera_points, valid_intensities, ret_datetime)  # 保存pcd（图像范围）
-    return point_cloud_image
-
-
-def process_lidar_point_cloud(lidar_msg, ret_datetime, K, R, T, save_pcd):
-    # 读取点云数据
+    start = time.time()
     lidar_data = pc2.read_points(lidar_msg, field_names=("x", "y", "z", "intensity"), skip_nans=True)
     lidar_points = cp.vstack([cp.array(lidar_data['x'], dtype=cp.float32),
                               cp.array(lidar_data['y'], dtype=cp.float32),
@@ -896,21 +734,16 @@ def process_lidar_point_cloud(lidar_msg, ret_datetime, K, R, T, save_pcd):
     v = (fy * lidar_points_camera[:, 1] * z_inv + cy).astype(cp.int32)
     # 过滤图像外的点
     valid_mask = (u >= 0) & (u < image_width) & (v >= 0) & (v < image_height)
-    u, v, valid_camera_points, valid_intensities = u[valid_mask], v[valid_mask], lidar_points_camera[valid_mask], intensities[valid_mask]
+    u, v, valid_camera_points, valid_intensities = u[valid_mask], v[valid_mask], lidar_points_camera[valid_mask], \
+        intensities[valid_mask]
     # 更新图像数据
     point_cloud_image[v, u] = valid_camera_points  # 向量化赋值
-    if save_pcd:
-        save_pcd_file(valid_camera_points.get(),valid_intensities.get(), ret_datetime) # 保存 pcd（图像范围）
+    # if save_pcd:
+    #     save_pcd_file(valid_camera_points.get(),valid_intensities.get(), lidar_datetime, cv_image,image_datetime) # 保存 pcd（图像范围）
+
+    end = time.time()
+    # print(f"点云 {(end - start) * 1000:6.2f}ms")
     return point_cloud_image.get()
-
-
-def save_pcd_file(points, intensities, timestamp):
-    cloud = o3d.geometry.PointCloud()
-    cloud.points = o3d.utility.Vector3dVector(points)
-    cloud.colors = o3d.utility.Vector3dVector(
-        np.array([[i, i, i] for i in intensities]))
-    pcd_filename = f'output/{timestamp}.pcd'
-    o3d.io.write_point_cloud(pcd_filename, cloud)
 
 
 def read_camera_parameters_from_yaml(filename):
@@ -930,39 +763,3 @@ def read_camera_parameters_from_yaml(filename):
     T = np.array(extrinsics['T'])  # 平移向量
 
     return K, distortion_coeffs, R, T
-
-
-def setup_rtsp_stream(url):
-    if not url:
-        default_url = "172.0.0.1"
-        push_stream_url = f"rtsp://{default_url}:8554/xy"
-        print(f"no net connected, rtsp add is {push_stream_url}")
-    else:
-        push_stream_url = f"rtsp://{url[0]}:8554/xy"
-        print(f"success, rtsp add is {push_stream_url}")
-    command = [
-        'ffmpeg',
-        '-f', 'rawvideo',
-        '-vcodec', 'rawvideo',
-        '-pix_fmt', 'bgr24',
-        '-s', '1920x1080',
-        '-r', '30',
-        '-i', '-',
-        '-c:v', 'libx264',
-        '-pix_fmt', 'yuv420p',
-        '-preset', 'ultrafast',
-        '-f', 'rtsp',
-        push_stream_url
-    ]
-    pipe = sp.Popen(command, stdin=sp.PIPE)
-    return pipe
-
-
-def publish_processed_image(bridge, cv_image, image_pub):
-    """发布处理后的图像到 ROS 话题"""
-    try:
-        # 将 OpenCV 图像转换为 ROS 消息
-        ros_image = bridge.cv2_to_imgmsg(cv_image, "bgr8")
-        image_pub.publish(ros_image)
-    except Exception as e:
-        print(f"Error in image_callback: {e}")

@@ -6,30 +6,30 @@
 # ------❤❤❤------ #
 
 
-import time
 import argparse
 import collections
 import cv2
 import json
 import message_filters
-import platform
 import os
+import platform
 import queue
 import rclpy
 import socket
-import subprocess as sp
+import subprocess
 import threading
+import time
 import traceback
-import warnings
 from cv_bridge import CvBridge
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CompressedImage, PointCloud2
 
 from demo import *
-from xy.funcs_lidar import generate_txt_path, get_timestamp, display_image_for_socket, get_seg_result, mytrack, get_ip_addresses, \
-    process_lidar_point_cloud, read_camera_parameters_from_yaml, setup_rtsp_stream, publish_processed_image, check_image_dynamic_early_stop, move_files_and_folders
+from xy.common import masks2segments, mytrack, get_ip_addresses, setup_rtsp_stream, publish_processed_image
+from xy.funcs_lidar import generate_txt_path, get_timestamp, display_image_for_socket, get_seg_result, \
+    process_lidar_point_cloud, read_camera_parameters_from_yaml, \
+    check_image_dynamic_early_stop, move_files_and_folders
 
-# warnings.simplefilter("error", RuntimeWarning)  # 将警告变为异常
 
 class ImageSubscriber(Node):
     def __init__(self, opt, cache_size=500):
@@ -107,15 +107,15 @@ class ImageSubscriber(Node):
         lidar_point, lidarstamp = self.lidar_cache.popleft()
         # 推理、模型后处理
         model_cost_start = time.time()
-        seg, masks = self.Model(cv_image)
+        results = self.Model(cv_image)
         model_cost_end = time.time()
         # 结果后处理
         line_process_start = time.time()
-        frame_all_info = self.handle_segmentation(seg, lidar_point, cv_image, imagestamp, lidarstamp)
+        frame_all_info = self.handle_segmentation(results, lidar_point, cv_image, imagestamp, lidarstamp)
         line_process_end = time.time()
         # 画目标
         save_start = time.time()
-        cv_image = self.Model.my_show(seg, cv_image, masks, show_track=True)
+        cv_image = self.Model.my_show(results, cv_image, show_track=True)
         cv2.putText(cv_image, f"imgs-{imagestamp}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2, cv2.LINE_AA)
         cv2.putText(cv_image, f"lidar-{lidarstamp}", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2, cv2.LINE_AA)
         # 显示图像
@@ -132,20 +132,29 @@ class ImageSubscriber(Node):
         # 推流到rtsp
         if self.opt.rtsp:
             self.pipe.stdin.write(cv_image.tobytes())
-        
+
         model_cost = f"{(model_cost_end - model_cost_start) * 1000:6.2f}ms"
         line_process = f"{(line_process_end - line_process_start) * 1000:6.2f}ms"
         save = f"{(save_end - save_start) * 1000:6.2f}ms"
         logger.info(f"model_cost:{model_cost}, line_process:{line_process}, save:{save}")
 
-    def handle_segmentation(self, seg, lidar_point, cv_image, imagestamp, lidarstamp):
+    def handle_segmentation(self, results, lidar_point, cv_image, imagestamp, lidarstamp):
         """处理分割结果并输出到文件"""
         with open(self.txt, 'a') as file:
             file.write(f"time_image:{imagestamp}\n")
             file.write(f"time_lidar:{lidarstamp}\n")
-            if seg and len(seg[0]) != 0:
-                seg = mytrack(seg, self.tracker)
-                frame_all_info = get_seg_result(seg, lidar_point, cv_image, file, self.Model, imagestamp, self.K, self.opt.show_cloud_point)
+            if results:
+                segments = masks2segments(results.masks, results.labels)
+                segments = [(seg - (0, 140)) / (0.3333333333333333, 0.3333333333333333) for seg in segments] if self.opt.usr_fast_mask_postprocess else segments
+                valid_indices = [i for i, seg in enumerate(segments) if seg.size > 0]
+                results.box = results.box[valid_indices]
+                results.conf = results.conf[valid_indices]
+                results.labels = results.labels[valid_indices]
+                results.masks = results.masks[valid_indices]
+                results.mask2segments = [segments[i] for i in valid_indices]
+                results = mytrack(results, self.tracker)
+                results = mytrack(results, self.tracker)
+                frame_all_info = get_seg_result(results, lidar_point, cv_image, file, self.Model, imagestamp, self.K, self.opt.show_cloud_point)
                 return frame_all_info
             else:
                 return ''
@@ -217,7 +226,7 @@ class ImageSubscriber(Node):
                                 '-pix_fmt', 'bgr24', '-s', f'{1920}x{1080}', '-r', str(20),
                                 '-i', '-', '-an', '-vcodec', 'mpeg4', '-qscale:v', '5', f"{self.avi}"
                             ]  # -qscale:v 是控制视频质量的一个重要参数，取值范围为 1 到 31，数值越小视频质量越高
-                            self.ffmpeg_proc = sp.Popen(ffmpeg_cmd, stdin=sp.PIPE)
+                            self.ffmpeg_proc = subprocess.Popen(ffmpeg_cmd, stdin=subprocess.PIPE)
                             self.check_start = False
                             self.start = True
                             os.system(f"bash Infer_Python/scripts/start_record.sh {path}")
@@ -267,7 +276,7 @@ def make_parser():
     # use ros bag as input
     parser.add_argument('--use_playback', type=str2bool, default=True)
     parser.add_argument('--show_cloud_point', type=str2bool, default=True)
-    parser.add_argument('--save_pcd', type=str2bool, default=False) # 一般不用
+    parser.add_argument('--save_pcd', type=str2bool, default=False)  # 一般不用
     # rtsp
     parser.add_argument('--rtsp', type=str2bool, default=False)
     parser.add_argument('--url', type=str, default=get_ip_addresses())

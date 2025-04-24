@@ -6,7 +6,6 @@
 # ------❤❤❤------ #
 
 
-import sys
 import colorlog
 import cupy as cp
 import cv2
@@ -14,9 +13,9 @@ import logging
 import numpy as np
 import onnxruntime as ort
 import os
+import sys
 import tensorrt as trt
 import time
-from collections import Counter
 from cuda import cudart
 from scipy.spatial import Delaunay
 from scipy.spatial.distance import cdist
@@ -104,11 +103,13 @@ class My_detection():
         return im, ratio, (dw, dh)
 
     def non_max_suppression(self, prediction, conf_thres=0.25, iou_thres=0.45, classes=None, agnostic=False,
-                            multi_label=False, labels=(), max_det=300, nc=0, max_time_img=0.05, max_nms=30000,max_wh=7680, ):
+                            multi_label=False, labels=(), max_det=300, nc=0, max_time_img=0.05, max_nms=30000,
+                            max_wh=7680, ):
         """ nms"""
         assert 0 <= conf_thres <= 1, f'Invalid Confidence threshold {conf_thres}, valid values are between 0.0 and 1.0'
         assert 0 <= iou_thres <= 1, f'Invalid IoU {iou_thres}, valid values are between 0.0 and 1.0'
-        if isinstance(prediction, (list, tuple)):  # YOLOv8 model in validation model, output = (inference_out, loss_out)
+        if isinstance(prediction,
+                      (list, tuple)):  # YOLOv8 model in validation model, output = (inference_out, loss_out)
             prediction = prediction[0]  # select only inference output
 
         bs = prediction.shape[0]  # batch size
@@ -224,56 +225,38 @@ class My_detection():
     def postprocess(self, pred, im0, image, ratio, pad_w, pad_h, conf_threshold, iou_threshold, nm=32):
         pass
 
-    # 可视化
-    def my_show(self, seg, im, masks, show_track=False):
-        s = 'Result: '
-        if len(seg[0]) != 0:
-            bboxes, segments = seg[0], seg[1]
-            # 统计每种类别的数量
-            for count, element in [(j, self.classes[i]) for i, j in Counter([int(result[-1]) for result in bboxes[0]]).items()]:
-                s += f"{element}*{count} "
+    def postprocess_fast(self, pred, im0, image, ratio, dw, dh, conf_threshold, iou_threshold, nm=32):
+        pass
 
+    def my_show(self, results, im, show_track=False):
+        s = 'Result: '
+        if results:
+            bboxes = results.box
+            confs = results.conf
+            labels = results.labels
+            id = results.id
+            segments = results.mask2segments
             im_canvas = im.copy()
-            for data in zip(bboxes[0], segments[0], masks):
-                # 处理 bbox 和 mask
-                if show_track:
-                    (*box, conf, track_id, cls_) = data[0]
-                else:
-                    (*box, conf, cls_) = data[0]
-                segment, mask = data[1], data[2]
-                # 如果类别属于 lane_seg_other，进行自定义绘制
-                if int(cls_) in self.lane_seg_other:
-                    # 计算质心
-                    moments = cv2.moments(mask.astype(np.uint8))  # 计算质心
-                    if moments["m00"] != 0:
-                        centroid_x = int(moments["m10"] / moments["m00"])
-                        centroid_y = int(moments["m01"] / moments["m00"])
+            # for count, element in [(j, self.classes[i]) for i, j in Counter([int(result[-1]) for result in bboxes[0]]).items()]:
+            #     s += f"{element}*{count} "
+
+            if show_track:
+                for box, conf, cls_, segPoint, track_id in zip(bboxes, confs, labels, segments, id):
+                    text = f'{self.classes[cls_]}:{conf:.3f} ID: {int(track_id)}' if int(track_id) != 0 else f'{self.classes[cls_]}:{conf:.3f}'
+                    color = self.color_palette[int(cls_)]
+                    if int(cls_) in self.lane_seg_other:
+                        self.drawLine(im, box, color, text, segPoint, cls_, im_canvas)
                     else:
-                        centroid_x = int(box[0] + (box[2] - box[0]) / 2)
-                        centroid_y = int(box[1] + (box[3] - box[1]) / 2)
-                    # 文本内容
-                    if show_track:
-                        text = f'{self.classes[cls_]}:{conf:.3f} ID: {int(track_id)}'
+                        self.drawBox(im, box, color, text)
+            else:
+                for box, conf, cls_, segPoint in zip(bboxes, confs, labels, segments):
+                    text = f'{self.classes[int(cls_)]}:{conf.item():.3f}'
+                    color = self.color_palette[int(cls_)]
+                    if int(cls_) in self.lane_seg_other:
+                        self.drawLine(im, box, color, text, segPoint, cls_, im_canvas)
                     else:
-                        text = f'{self.classes[cls_]}:{conf:.3f}'
-                    (text_width, text_height), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
-                    # 矩形框位置
-                    top_left = (centroid_x - text_width // 2 - 5, centroid_y - text_height // 2 - 5)
-                    bottom_right = (top_left[0] + text_width + 10, top_left[1] + text_height + 10)
-                    # 绘制矩形框和文本
-                    cv2.rectangle(im, top_left, bottom_right, self.color_palette[int(cls_)], -1)
-                    cv2.putText(im, text, (top_left[0] + (bottom_right[0] - top_left[0] - text_width) // 2,
-                                           top_left[1] + (bottom_right[1] - top_left[1] + text_height) // 2),
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
-                    # 绘制掩码
-                    if not int(cls_) in [i for i in range(len(self.lane))]:  # lane line types
-                        cv2.fillPoly(im_canvas, np.int32([segment]), self.color_palette[int(cls_)])
-                else:
-                    if show_track:
-                        self.drawYOLO(im, box, conf, cls_, int(track_id))
-                    else:
-                        self.drawYOLO(im, box, conf, cls_)
-            # 融合图像
+                        self.drawBox(im, box, color, text)
+
             im = cv2.addWeighted(im_canvas, 0.3, im, 0.7, 0)
         message = f"🚀🚀🚀 Total:{(self.message[0] + self.message[1] + self.message[2]):6.2f}ms," \
                   f" Pre:{self.message[0]:6.2f}ms," \
@@ -284,17 +267,27 @@ class My_detection():
 
         return im
 
-    def drawYOLO(self, im0, box, score, class_id, track_id=None):
-        """画yolo框"""
-        color = self.color_palette[int(class_id)]
+    def drawLine(self, im0, box, color, text, segPoint, cls_, im_canvas):
+        centroid_x = int(box[0] + (box[2] - box[0]) / 2)
+        centroid_y = int(box[1] + (box[3] - box[1]) / 2)
+        (text_width, text_height), baseline = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+        top_left = (centroid_x - text_width // 2 - 5, centroid_y - text_height // 2 - 5)
+        bottom_right = (top_left[0] + text_width + 10, top_left[1] + text_height + 10)
+        cv2.rectangle(im0, top_left, bottom_right, color, -1)
+        cv2.putText(im0, text, (top_left[0] + (bottom_right[0] - top_left[0] - text_width) // 2,
+                                top_left[1] + (bottom_right[1] - top_left[1] + text_height) // 2),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+        if not int(cls_) in [i for i in range(len(self.lane))]:  # lane line types
+            cv2.fillPoly(im_canvas, np.int32([segPoint]), color)
+
+    def drawBox(self, im0, box, color, text):
         p1, p2 = (int(box[0]), int(box[1])), (int(box[2]), int(box[3]))
         cv2.rectangle(im0, p1, p2, color, 2)
-        label = f'{self.classes[class_id]}: {score:.2f} ID: {int(track_id)}' if track_id else f'{self.classes[class_id]}: {score:.2f}'
-        w0, h0 = cv2.getTextSize(label, 0, 0.5, 1)[0]
+        w0, h0 = cv2.getTextSize(text, 0, 0.5, 1)[0]
         outside = p1[1] - h0 >= 3
         p2 = p1[0] + w0, p1[1] - h0 - 3 if outside else p1[1] + h0 + 3
         cv2.rectangle(im0, p1, p2, color, -1, cv2.LINE_AA)
-        cv2.putText(im0, label, (p1[0], p1[1] - 2 if outside else p1[1] + h0 + 2), 0, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
+        cv2.putText(im0, text, (p1[0], p1[1] - 2 if outside else p1[1] + h0 + 2), 0, 0.5, (0, 0, 0), 1, cv2.LINE_AA)
 
     def drawZED(self, im, box, score, class_id, overlay):
         """画zed框"""
@@ -304,17 +297,21 @@ class My_detection():
         bottom_right_corner = [box[2], box[3]]
         bottom_left_corner = [box[0], box[3]]
         # Creation of the 2 horizontal lines
-        cv2.line(im, (int(top_left_corner[0]), int(top_left_corner[1])), (int(top_right_corner[0]), int(top_right_corner[1])), color, 3)
-        cv2.line(im, (int(bottom_left_corner[0]), int(bottom_left_corner[1])), (int(bottom_right_corner[0]), int(bottom_right_corner[1])), color, 3)
+        cv2.line(im, (int(top_left_corner[0]), int(top_left_corner[1])),
+                 (int(top_right_corner[0]), int(top_right_corner[1])), color, 3)
+        cv2.line(im, (int(bottom_left_corner[0]), int(bottom_left_corner[1])),
+                 (int(bottom_right_corner[0]), int(bottom_right_corner[1])), color, 3)
         # Creation of 2 vertical lines
         self.draw_vertical_line(im, bottom_left_corner, top_left_corner, color, 3)
         self.draw_vertical_line(im, bottom_right_corner, top_right_corner, color, 3)
         roi_height = int(top_right_corner[0] - top_left_corner[0])
         roi_width = int(bottom_left_corner[1] - top_left_corner[1])
-        overlay_roi = overlay[int(top_left_corner[1]):int(top_left_corner[1] + roi_width), int(top_left_corner[0]):int(top_left_corner[0] + roi_height)]
+        overlay_roi = overlay[int(top_left_corner[1]):int(top_left_corner[1] + roi_width),
+                      int(top_left_corner[0]):int(top_left_corner[0] + roi_height)]
 
         overlay_roi[:, :] = color
-        p1, p2 = (int(top_left_corner[0]), int(top_left_corner[1])), (int(bottom_right_corner[0]), int(bottom_right_corner[1]))
+        p1, p2 = (int(top_left_corner[0]), int(top_left_corner[1])), (
+        int(bottom_right_corner[0]), int(bottom_right_corner[1]))
 
         confidence = str('{:.2f}'.format(score))
         label = f"{self.label_dict[class_id]} {confidence}"
@@ -322,7 +319,8 @@ class My_detection():
         outside = p1[1] - h0 >= 3
         p2 = p1[0] + w0 + w0 // 4, p1[1] - h0 - 3 if outside else p1[1] + h0 + 3
         cv2.rectangle(im, p1, p2, color, -1, cv2.LINE_AA)
-        cv2.putText(im, label, (p1[0], p1[1] - 2 if outside else p1[1] + h0 + 2), cv2.FONT_HERSHEY_COMPLEX_SMALL, 0.8, (0, 0, 0), 1, cv2.LINE_AA)
+        cv2.putText(im, label, (p1[0], p1[1] - 2 if outside else p1[1] + h0 + 2), cv2.FONT_HERSHEY_COMPLEX_SMALL, 0.8,
+                    (0, 0, 0), 1, cv2.LINE_AA)
 
     def draw_vertical_line(self, left_display, start_pt, end_pt, clr, thickness):
         """画垂直线"""
@@ -360,7 +358,8 @@ class My_detection():
         # Slicing and resizing
         masks = masks[top:bottom, left:right]
         masks = cp.asnumpy(masks)  # Convert to numpy for OpenCV
-        masks = cv2.resize(masks, (im0_shape[1], im0_shape[0]), interpolation=cv2.INTER_LINEAR)  # INTER_CUBIC would be better
+        masks = cv2.resize(masks, (im0_shape[1], im0_shape[0]),
+                           interpolation=cv2.INTER_LINEAR)  # INTER_CUBIC would be better
         # Ensure masks has third dimension
         if len(masks.shape) == 2:
             masks = masks[:, :, None]
@@ -377,69 +376,6 @@ class My_detection():
 
         return masks * ((r >= x1) * (r < x2) * (c >= y1) * (c < y2))
 
-    def get_orientation(self, pts, img=None):
-        # 确保轮廓点是二维浮点型数组
-        data_pts = np.array(pts, dtype=np.float64).reshape(-1, 2)
-        # 计算轮廓的质心
-        mean = np.mean(data_pts, axis=0)
-        data_pts -= mean
-        # PCA 主成分分析
-        _, eigenvectors, _ = cv2.PCACompute2(data_pts, mean=None)
-        return eigenvectors[0]  # 返回主轴方向的向量
-
-    def find_adjacent_min_distances(self, contours):
-        min_distances = []
-        for i in range(len(contours) - 1):
-            # 计算相邻轮廓之间的最短距离
-            dists = cdist(contours[i].reshape(-1, 2), contours[i + 1].reshape(-1, 2))
-            min_distance = dists.min()  # 获取最短距离
-            min_distances.append(min_distance)
-
-        return min_distances
-
-    def calculate_angle(self, vec1, vec2):
-        """计算轮廓的角度差异"""
-        dot_product = np.dot(vec1, vec2)
-        magnitude1 = np.linalg.norm(vec1)
-        magnitude2 = np.linalg.norm(vec2)
-        cos_theta = dot_product / (magnitude1 * magnitude2)
-        # 限制cos_theta 如1.000000002--->1.0,否则np.arccos(cos_theta)为nan
-        cos_theta = np.clip(cos_theta, -1, 1)
-        # 夹角计算，弧度转为角度
-        angle = np.arccos(cos_theta)
-
-        return np.degrees(angle)
-
-    def alpha_shape(self, points, alpha):
-        """
-        计算点集的Alpha Shape（凹包络）。
-        :param points: 点的集合 (n, 2)。
-        :param alpha: Alpha 参数，决定凹包络的紧致程度。
-        :return: 包络边界的点对集合。
-        """
-        if len(points) < 4:
-            return Delaunay(points).convex_hull
-        
-        tri = Delaunay(points)
-        triangles = points[tri.simplices]  # 提取三角形的顶点
-        a = np.linalg.norm(triangles[:, 0] - triangles[:, 1], axis=1)
-        b = np.linalg.norm(triangles[:, 1] - triangles[:, 2], axis=1)
-        c = np.linalg.norm(triangles[:, 2] - triangles[:, 0], axis=1)
-        s = (a + b + c) / 2.0
-        area = np.sqrt(s * (s - a) * (s - b) * (s - c))
-        # 计算外接圆半径
-        circum_r = (a * b * c) / (4.0 * area)
-        valid = circum_r < 1.0 / alpha
-        # 提取满足条件的边
-        edges = set()
-        for simplex, is_valid in zip(tri.simplices, valid):
-            if is_valid:
-                edges.update([tuple(sorted([simplex[0], simplex[1]])),
-                            tuple(sorted([simplex[1], simplex[2]])),
-                            tuple(sorted([simplex[2], simplex[0]]))])
-        
-        return np.array(list(edges))
-    
     def convert_to_center_width_height(self, x):
         # 获取形状
         n, _ = x.shape
@@ -464,6 +400,9 @@ class My_detection():
 
         return new_x
 
+    def sigmoid(self, x):
+        return 1. / (1. + np.exp(-x))
+
 
 class Build_TRT_model():
     def __init__(self, weight, mylogger):
@@ -481,7 +420,7 @@ class Build_TRT_model():
             engine.get_tensor_shape(self.tensorname[i])
             for i in range(self.nIO)
             if engine.get_tensor_mode(self.tensorname[i]) == trt.TensorIOMode.INPUT]
-        
+
         mylogger.info('Load engine success')
 
     def __call__(self, image):
@@ -496,19 +435,17 @@ class Build_TRT_model():
             bufferD.append(cudart.cudaMalloc(bufferH[i].nbytes)[1])
         # 将数据从主机端复制到设备端
         for i in range(self.nInput):
-            cudart.cudaMemcpy(bufferD[i], bufferH[i].ctypes.data, bufferH[i].nbytes,
-                              cudart.cudaMemcpyKind.cudaMemcpyHostToDevice)
+            cudart.cudaMemcpy(bufferD[i], bufferH[i].ctypes.data, bufferH[i].nbytes, cudart.cudaMemcpyKind.cudaMemcpyHostToDevice)
         for i in range(self.nIO):
             self.context.set_tensor_address(self.tensorname[i], int(bufferD[i]))
         # v3推理
         self.context.execute_async_v3(0)
         # 将数据从设备端复制到主机端
         for i in range(self.nInput, self.nIO):
-            cudart.cudaMemcpy(bufferH[i].ctypes.data, bufferD[i], bufferH[i].nbytes,
-                              cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost)
+            cudart.cudaMemcpy(bufferH[i].ctypes.data, bufferD[i], bufferH[i].nbytes, cudart.cudaMemcpyKind.cudaMemcpyDeviceToHost)
         for buf in bufferD:
             cudart.cudaFree(buf)  # 释放,不然要炸
-        
+
         return bufferH[1:]
 
 
@@ -532,16 +469,14 @@ class My_LoggerConfig:
         self._configure_handler()
 
     def _configure_handler(self):
-        # 创建一个处理器，用于将日志输出到控制台
         console_handler = logging.StreamHandler()
         console_handler.setLevel(logging.DEBUG)
-        # 文件处理器
+
         mount_path = '/mnt/udisk'
-        backup_path = 'output'   
+        backup_path = 'output'
         if os.path.ismount(mount_path):
             target_path = os.path.join(mount_path, 'output')
         else:
-            # 如果挂载路径不存在，使用备用路径
             target_path = backup_path
         os.makedirs(target_path, exist_ok=True)
         log_filename = f'{target_path}/app.log'
@@ -549,8 +484,8 @@ class My_LoggerConfig:
         file_handler = logging.FileHandler(log_filename)
         file_handler.setLevel(logging.DEBUG)
         file_handler.addFilter(CustomFilter())
-        # 创建一个彩色格式化器
-        formatter = colorlog.ColoredFormatter("%(log_color)s%(levelname)s - %(name)s | - %(message_log_color)s%(message)s",
+        formatter = colorlog.ColoredFormatter(
+            "%(log_color)s%(levelname)s - %(name)s | - %(message_log_color)s%(message)s",
             datefmt=None,
             reset=True,
             log_colors={
@@ -569,12 +504,10 @@ class My_LoggerConfig:
                     'CRITICAL': 'bg_red',
                 }
             }
-        )
+            )
         file_formatter = logging.Formatter("%(asctime)s - %(levelname)s - %(message)s")
-        # 将格式化器添加到处理器
         console_handler.setFormatter(formatter)
         file_handler.setFormatter(file_formatter)
-        # 将处理器添加到记录器
         self.logger.addHandler(console_handler)
         self.logger.addHandler(file_handler)
         self.logger.propagate = False
@@ -588,6 +521,34 @@ class My_LoggerConfig:
 class CustomFilter(logging.Filter):
     def filter(self, record):
         return record.levelno in (logging.DEBUG, logging.WARNING, logging.ERROR, logging.CRITICAL)
+
+
+class Result:
+    def __init__(self, box=None, conf=None, labels=None, masks=None, mask2segments=None, id=None):
+        self.box = box
+        self.conf = conf
+        self.labels = labels
+        self.masks = masks
+        self.mask2segments = mask2segments
+        self.id = id
+
+    def __bool__(self):
+        def has_value(x):
+            if x is None:
+                return False
+            elif hasattr(x, "__len__"):
+                return len(x) > 0
+            else:
+                return True
+
+        return any(
+            has_value(value)
+            for value in [
+                self.box,
+                self.conf,
+                self.masks,
+            ]
+        )
 
 
 def str2bool(value):

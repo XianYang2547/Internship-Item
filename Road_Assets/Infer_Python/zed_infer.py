@@ -8,18 +8,20 @@
 
 import argparse
 import collections
-import os
-import subprocess as sp
-import traceback
 import cv2
 import message_filters
+import os
 import rclpy
+import subprocess as sp
+import traceback
 from cv_bridge import CvBridge
 from rclpy.node import Node
 from sensor_msgs.msg import Image, CompressedImage
 
 from demo import *
-from xy.funcs_zed import generate_txt_path, get_timestamp, display_image, get_seg_result, mytrack, get_ip_addresses
+from xy.common import masks2segments, mytrack, get_ip_addresses, display_image, setup_rtsp_stream, \
+    publish_processed_image
+from xy.zed.zed_tools import generate_txt_path, get_timestamp, get_seg_result
 
 
 class ImageSubscriber(Node):
@@ -28,9 +30,9 @@ class ImageSubscriber(Node):
         self.opt = opt
         self.Model = Dection(self.opt)
         self.tracker = BYTETracker(self.opt, frame_rate=30)
-        self.txt = generate_txt_path(self.opt.base_directory, base_name='result', extension='.txt',mode='zed_infer')
-        self.avi = generate_txt_path(self.opt.base_directory, base_name='result', extension='.avi',mode='zed_infer')
-        self.pipe = self.setup_rtsp_stream()  # RTSP推流相关
+        self.txt = generate_txt_path(self.opt.base_directory, base_name='result', extension='.txt', mode='zed_infer')
+        self.avi = generate_txt_path(self.opt.base_directory, base_name='result', extension='.avi', mode='zed_infer')
+        self.pipe = setup_rtsp_stream(opt.url)  # RTSP推流相关
         self.bridge = CvBridge()  # 创建一个 CvBridge 对象，用于将 ROS 的 Image 消息转换为 OpenCV 格式
         self.image_pub = self.create_publisher(Image, '/processed_image', 30)  # 创建发布者，将处理后的图像发送到话题
         # 缓存设置
@@ -67,9 +69,10 @@ class ImageSubscriber(Node):
                 depth_image = self.bridge.imgmsg_to_cv2(depth_msg, "32FC4")  # 根据实际深度图类型调整
             # 获取时间戳
             ret_datetime = get_timestamp(img_msg.header.stamp)
+            ret_datetime0 = get_timestamp(depth_msg.header.stamp)
             # 将图像和深度图像添加到缓存
             self.image_cache.append((cv_image, ret_datetime))
-            self.depth_cache.append((depth_image, ret_datetime))
+            self.depth_cache.append((depth_image, ret_datetime0))
             # 处理缓存中的图像和深度图像
             self.process_images()
 
@@ -87,73 +90,49 @@ class ImageSubscriber(Node):
         cv_image, ret_datetime = self.image_cache.popleft()
         depth_image, _ = self.depth_cache.popleft()  # 深度图像的时间戳可以忽略
         # 推理、模型后处理
-        seg, masks = self.Model(cv_image)
+        results = self.Model(cv_image)
         # 结果后处理
-        self.handle_segmentation(seg, depth_image, cv_image, ret_datetime)
+        self.handle_segmentation(results, depth_image, cv_image, ret_datetime)
         # 画目标
-        cv_image = self.Model.my_show(seg, cv_image, masks, show_track=True)
+        cv_image = self.Model.my_show(results, cv_image, show_track=True)
+        cv2.putText(cv_image, f"imgs-{ret_datetime}", (50, 50), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2, cv2.LINE_AA)
+        cv2.putText(cv_image, f"lidar-{_}", (50, 100), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 0, 255), 2, cv2.LINE_AA)
         # 显示图像
         display_image(cv_image)
         # 保存
         self.ffmpeg_proc.stdin.write(cv_image.tobytes())
         # 发送图像到ros2管道
-        self.publish_processed_image(cv_image)
+        publish_processed_image(self.bridge, cv_image, self.image_pub)
         # 推流到rtsp
         if self.opt.rtsp:
             self.pipe.stdin.write(cv_image.tobytes())
 
-    def handle_segmentation(self, seg, depth_image, cv_image, ret_datetime):
+    def handle_segmentation(self, results, depth_image, cv_image, ret_datetime):
         """处理分割结果并输出到文件"""
         with open(self.txt, 'a') as file:
             file.write(f"time:{ret_datetime}\n")
-            if seg and len(seg[0]) != 0:
-                seg = mytrack(seg, self.tracker)
-                get_seg_result(seg, depth_image, cv_image, file, self.Model, ret_datetime)
-
-    def publish_processed_image(self, cv_image):
-        """发布处理后的图像到 ROS 话题"""
-        try:
-            # 将 OpenCV 图像转换为 ROS 消息
-            ros_image = self.bridge.cv2_to_imgmsg(cv_image, "bgr8")
-            self.image_pub.publish(ros_image)
-        except Exception as e:
-            logger.error(f"Error in image_callback: {e}\n{traceback.format_exc()}")
-
-    def setup_rtsp_stream(self):
-        if not self.opt.url:
-            default_url = "172.0.0.1"
-            push_stream_url = f"rtsp://{default_url}:8554/xy"
-            logger.warning(f"no net connected, rtsp add is {push_stream_url}")
-        else:
-            push_stream_url = f"rtsp://{self.opt.url[0]}:8554/xy"
-            logger.info(f"success, rtsp add is {push_stream_url}")
-        command = [
-            'ffmpeg',
-            '-f', 'rawvideo',
-            '-vcodec', 'rawvideo',
-            '-pix_fmt', 'bgr24',
-            '-s', '1920x1080',
-            '-r', '30',
-            '-i', '-',
-            '-c:v', 'libx264',
-            '-pix_fmt', 'yuv420p',
-            '-preset', 'ultrafast',
-            '-f', 'rtsp',
-            push_stream_url
-        ]
-        pipe = sp.Popen(command, stdin=sp.PIPE)
-        return pipe
+            if results:
+                segments = masks2segments(results.masks, results.labels)
+                segments = [(seg - (0, 140)) / (0.3333333333333333, 0.3333333333333333) for seg in segments] if self.opt.usr_fast_mask_postprocess else segments
+                valid_indices = [i for i, seg in enumerate(segments) if seg.size > 0]
+                results.box = results.box[valid_indices]
+                results.conf = results.conf[valid_indices]
+                results.labels = results.labels[valid_indices]
+                results.masks = results.masks[valid_indices]
+                results.mask2segments = [segments[i] for i in valid_indices]
+                results = mytrack(results, self.tracker)
+                get_seg_result(results, depth_image, cv_image, file, self.Model, ret_datetime)
 
 
 def make_parser():
     # model config
     parser = argparse.ArgumentParser()
     parser.add_argument('--configs', type=str, default=f"{os.path.abspath('Infer_Python/xy/configs.yaml')}")
-    parser.add_argument('--model', type=str, default=f"{os.path.abspath('models/shalf.plan')}")
+    parser.add_argument('--model', type=str, default=f"{os.path.abspath('models/best.plan')}")
     parser.add_argument('--usr_fast_mask_postprocess', type=str2bool, default=True)
     parser.add_argument('--iou_threshold', type=float, default=0.5)
     parser.add_argument('--conf_threshold', type=float, default=0.5)
-    parser.add_argument('--show_info',type=str2bool,default=1)
+    parser.add_argument('--show_info', type=str2bool, default=1)
     # output path
     parser.add_argument('--base_directory', type=str, default=f"{os.path.abspath('/mnt/udisk/output')}")
     # use ros bag as input
@@ -191,3 +170,4 @@ if __name__ == '__main__':
         main()
     except Exception as e:
         logger.error(f"Error\n{traceback.format_exc()}")
+# TODO 有个bug没修复
