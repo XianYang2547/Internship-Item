@@ -1,0 +1,10 @@
+cameras:
+  - url: "rtsp://admin:yfzh123456@172.16.30.242:554/Streaming/Channels/101"   # 相机1
+    queue_id: 0                                                               # 指定队列分组
+    undistort: true                                                           # 是否启用去畸变
+  - url: "rtsp://admin:yfzh123456@172.16.30.242:554/Streaming/Channels/201"  
+    queue_id: 1
+    undistort: true
+  # - url: "rtsp://admin:pass3@ip3/stream3"  
+  #   queue_id: 2                            
+  #   undistort: false                       
